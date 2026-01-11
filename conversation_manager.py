@@ -1,78 +1,129 @@
 """
-Conversation Manager for Two Claude Models
+Conversation Manager for Two AI Models
 
-This module orchestrates conversations between two Claude AI instances,
-with infrastructure for future steering vector integration.
+This module orchestrates conversations between two AI instances,
+with infrastructure for steering vector integration.
+
+Supports multiple backends:
+- Anthropic API (paid, cloud-based)
+- Ollama (free, local models)
 """
 
 import os
-from typing import List, Dict, Optional, Any
-from anthropic import Anthropic
+from typing import List, Dict, Optional, Any, Callable, Union
 from datetime import datetime
 import json
 
+from steering_vectors import (
+    SteeringVector,
+    SteeringVectorApplicator,
+    SteeringMode,
+    PredefinedVectors
+)
 
-class ClaudeAgent:
-    """Represents a single Claude AI agent in the conversation."""
+from model_backends import (
+    ModelBackend,
+    BackendType,
+    create_backend
+)
+
+
+class AIAgent:
+    """Represents a single AI agent in the conversation (supports multiple backends)."""
 
     def __init__(
         self,
         name: str,
-        api_key: str,
+        backend: Optional[ModelBackend] = None,
+        api_key: Optional[str] = None,  # For backward compatibility
         model: str = "claude-sonnet-4-5-20250929",
         system_prompt: Optional[str] = None,
-        steering_vector: Optional[Dict[str, Any]] = None
+        steering_mode: SteeringMode = SteeringMode.SIMULATED,
+        default_vectors: Optional[List[SteeringVector]] = None,
+        vector_selector: Optional[Callable[[str, List[SteeringVector]], List[SteeringVector]]] = None
     ):
         """
-        Initialize a Claude agent.
+        Initialize an AI agent.
 
         Args:
-            name: Identifier for this agent (e.g., "Claude A", "Claude B")
-            api_key: Anthropic API key
+            name: Identifier for this agent (e.g., "Agent A", "Agent B")
+            backend: ModelBackend instance (new way - recommended)
+            api_key: Anthropic API key (old way - for backward compatibility)
             model: Model identifier to use
             system_prompt: Optional system prompt to customize behavior
-            steering_vector: Optional steering vector parameters (for future use)
+            steering_mode: Mode for applying steering vectors (BETA_API, SIMULATED, DISABLED)
+            default_vectors: Default steering vectors to apply to all responses
+            vector_selector: Optional function to dynamically select vectors based on context
         """
         self.name = name
-        self.client = Anthropic(api_key=api_key)
-        self.model = model
-        self.system_prompt = system_prompt or "You are a helpful AI assistant engaging in a conversation."
-        self.steering_vector = steering_vector
-        self.conversation_history: List[Dict[str, str]] = []
 
-    def respond(self, message: str) -> str:
+        # Handle backend - either passed directly or created from api_key
+        if backend is not None:
+            self.backend = backend
+        elif api_key is not None:
+            # Backward compatibility: create Anthropic backend from api_key
+            self.backend = create_backend(
+                BackendType.ANTHROPIC,
+                api_key=api_key,
+                model=model
+            )
+        else:
+            raise ValueError("Either 'backend' or 'api_key' must be provided")
+
+        self.model = model
+        self.base_system_prompt = system_prompt or "You are a helpful AI assistant engaging in a conversation."
+        self.steering_mode = steering_mode
+        self.default_vectors = default_vectors or []
+        self.vector_selector = vector_selector
+        self.applicator = SteeringVectorApplicator(mode=steering_mode)
+        self.conversation_history: List[Dict[str, str]] = []
+        self.last_outgoing_vectors: List[SteeringVector] = []
+        self.last_incoming_vectors: List[SteeringVector] = []
+
+    def respond(
+        self,
+        message: str,
+        incoming_vectors: Optional[List[SteeringVector]] = None
+    ) -> tuple[str, List[SteeringVector]]:
         """
         Generate a response to the given message.
 
         Args:
             message: The message to respond to
+            incoming_vectors: Optional steering vectors from the other agent
 
         Returns:
-            The agent's response
+            Tuple of (response text, outgoing steering vectors)
         """
+        # Store incoming vectors
+        self.last_incoming_vectors = incoming_vectors or []
+
         # Add the message to conversation history
         self.conversation_history.append({
             "role": "user",
             "content": message
         })
 
-        # Prepare API call parameters
-        api_params = {
-            "model": self.model,
-            "max_tokens": 1024,
-            "system": self.system_prompt,
-            "messages": self.conversation_history
-        }
+        # Determine which steering vectors to apply
+        vectors_to_apply = self.default_vectors.copy()
 
-        # TODO: Add steering vector support when available in API
-        # if self.steering_vector:
-        #     api_params["steering_vector"] = self.steering_vector
+        # If we have a vector selector function, let it choose/modify vectors
+        if self.vector_selector:
+            selected = self.vector_selector(message, self.last_incoming_vectors)
+            vectors_to_apply.extend(selected)
 
-        # Get response from Claude
-        response = self.client.messages.create(**api_params)
+        # Apply steering vectors to system prompt
+        system_prompt_with_vectors = self.applicator.apply_to_system_prompt(
+            self.base_system_prompt,
+            vectors_to_apply
+        )
 
-        # Extract the response text
-        response_text = response.content[0].text
+        # Get response from backend
+        response_text = self.backend.generate(
+            messages=self.conversation_history,
+            system_prompt=system_prompt_with_vectors,
+            max_tokens=1024
+        )
 
         # Add to conversation history
         self.conversation_history.append({
@@ -80,55 +131,103 @@ class ClaudeAgent:
             "content": response_text
         })
 
-        return response_text
+        # Store outgoing vectors for next turn
+        self.last_outgoing_vectors = vectors_to_apply
+
+        return response_text, vectors_to_apply
 
     def reset_history(self):
         """Clear the conversation history for this agent."""
         self.conversation_history = []
+        self.last_outgoing_vectors = []
+        self.last_incoming_vectors = []
 
     def get_history(self) -> List[Dict[str, str]]:
         """Get the full conversation history."""
         return self.conversation_history.copy()
 
+    def get_vector_history(self) -> Dict[str, List[SteeringVector]]:
+        """Get the steering vector history."""
+        return {
+            "last_outgoing": self.last_outgoing_vectors,
+            "last_incoming": self.last_incoming_vectors
+        }
+
+
+# Backward compatibility alias
+ClaudeAgent = AIAgent
+
 
 class ConversationManager:
-    """Manages conversations between two Claude agents."""
+    """Manages conversations between two AI agents with steering vector support."""
 
     def __init__(
         self,
-        api_key: str,
+        backend: Optional[ModelBackend] = None,
+        api_key: Optional[str] = None,  # For backward compatibility
         model: str = "claude-sonnet-4-5-20250929",
-        agent_a_name: str = "Claude A",
-        agent_b_name: str = "Claude B",
+        agent_a_name: str = "Agent A",
+        agent_b_name: str = "Agent B",
         agent_a_system: Optional[str] = None,
-        agent_b_system: Optional[str] = None
+        agent_b_system: Optional[str] = None,
+        steering_mode: SteeringMode = SteeringMode.SIMULATED,
+        agent_a_vectors: Optional[List[SteeringVector]] = None,
+        agent_b_vectors: Optional[List[SteeringVector]] = None,
+        agent_a_vector_selector: Optional[Callable[[str, List[SteeringVector]], List[SteeringVector]]] = None,
+        agent_b_vector_selector: Optional[Callable[[str, List[SteeringVector]], List[SteeringVector]]] = None,
+        show_vectors: bool = True
     ):
         """
         Initialize the conversation manager.
 
         Args:
-            api_key: Anthropic API key
+            backend: ModelBackend instance to use for both agents (new way - recommended)
+            api_key: Anthropic API key (old way - for backward compatibility)
             model: Model identifier to use for both agents
             agent_a_name: Name for the first agent
             agent_b_name: Name for the second agent
             agent_a_system: System prompt for agent A
             agent_b_system: System prompt for agent B
+            steering_mode: Mode for steering vectors (BETA_API, SIMULATED, DISABLED)
+            agent_a_vectors: Default steering vectors for agent A
+            agent_b_vectors: Default steering vectors for agent B
+            agent_a_vector_selector: Dynamic vector selector for agent A
+            agent_b_vector_selector: Dynamic vector selector for agent B
+            show_vectors: Whether to display steering vectors during conversation
+
+        Examples:
+            # Using Ollama (free, local)
+            backend = create_backend(BackendType.OLLAMA, model="llama3.2")
+            manager = ConversationManager(backend=backend)
+
+            # Using Anthropic (paid, backward compatible)
+            manager = ConversationManager(api_key="your-key")
         """
-        self.agent_a = ClaudeAgent(
+        self.agent_a = AIAgent(
             name=agent_a_name,
+            backend=backend,
             api_key=api_key,
             model=model,
-            system_prompt=agent_a_system
+            system_prompt=agent_a_system,
+            steering_mode=steering_mode,
+            default_vectors=agent_a_vectors,
+            vector_selector=agent_a_vector_selector
         )
 
-        self.agent_b = ClaudeAgent(
+        self.agent_b = AIAgent(
             name=agent_b_name,
+            backend=backend,
             api_key=api_key,
             model=model,
-            system_prompt=agent_b_system
+            system_prompt=agent_b_system,
+            steering_mode=steering_mode,
+            default_vectors=agent_b_vectors,
+            vector_selector=agent_b_vector_selector
         )
 
-        self.full_conversation: List[Dict[str, str]] = []
+        self.steering_mode = steering_mode
+        self.show_vectors = show_vectors
+        self.full_conversation: List[Dict[str, Any]] = []
 
     def start_conversation(
         self,
@@ -146,6 +245,8 @@ class ConversationManager:
         """
         print(f"\n{'='*60}")
         print(f"Starting conversation between {self.agent_a.name} and {self.agent_b.name}")
+        if self.steering_mode != SteeringMode.DISABLED:
+            print(f"Steering mode: {self.steering_mode.value}")
         print(f"{'='*60}\n")
 
         # Start with the initial message to Agent A
@@ -161,6 +262,7 @@ class ConversationManager:
         current_agent = self.agent_a
         other_agent = self.agent_b
         turn_count = 0
+        incoming_vectors: List[SteeringVector] = []
 
         try:
             while True:
@@ -169,10 +271,18 @@ class ConversationManager:
                     print(f"\n[CONVERSATION ENDED: Reached maximum of {max_turns} turns]")
                     break
 
-                # Get response from current agent
+                # Get response from current agent (with steering vectors)
                 print(f"[{current_agent.name}]")
-                response = current_agent.respond(current_message)
+                response, outgoing_vectors = current_agent.respond(
+                    current_message,
+                    incoming_vectors
+                )
                 print(f"{response}\n")
+
+                # Show steering vectors if enabled
+                if self.show_vectors and outgoing_vectors and self.steering_mode != SteeringMode.DISABLED:
+                    print(f"[Steering Vectors: {', '.join(v.name for v in outgoing_vectors)}]")
+
                 print(f"{'-'*60}\n")
 
                 # Record in full conversation
@@ -180,11 +290,13 @@ class ConversationManager:
                     "speaker": current_agent.name,
                     "message": response,
                     "timestamp": datetime.now().isoformat(),
-                    "turn": turn_count + 1
+                    "turn": turn_count + 1,
+                    "steering_vectors": [v.to_dict() for v in outgoing_vectors] if outgoing_vectors else []
                 })
 
-                # Swap agents
+                # Swap agents and pass vectors
                 current_message = response
+                incoming_vectors = outgoing_vectors
                 current_agent, other_agent = other_agent, current_agent
                 turn_count += 1
 
