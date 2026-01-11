@@ -1,13 +1,16 @@
 """
-Conversation Manager for Two Claude Models
+Conversation Manager for Two AI Models
 
-This module orchestrates conversations between two Claude AI instances,
+This module orchestrates conversations between two AI instances,
 with infrastructure for steering vector integration.
+
+Supports multiple backends:
+- Anthropic API (paid, cloud-based)
+- Ollama (free, local models)
 """
 
 import os
-from typing import List, Dict, Optional, Any, Callable
-from anthropic import Anthropic
+from typing import List, Dict, Optional, Any, Callable, Union
 from datetime import datetime
 import json
 
@@ -18,14 +21,21 @@ from steering_vectors import (
     PredefinedVectors
 )
 
+from model_backends import (
+    ModelBackend,
+    BackendType,
+    create_backend
+)
 
-class ClaudeAgent:
-    """Represents a single Claude AI agent in the conversation."""
+
+class AIAgent:
+    """Represents a single AI agent in the conversation (supports multiple backends)."""
 
     def __init__(
         self,
         name: str,
-        api_key: str,
+        backend: Optional[ModelBackend] = None,
+        api_key: Optional[str] = None,  # For backward compatibility
         model: str = "claude-sonnet-4-5-20250929",
         system_prompt: Optional[str] = None,
         steering_mode: SteeringMode = SteeringMode.SIMULATED,
@@ -33,11 +43,12 @@ class ClaudeAgent:
         vector_selector: Optional[Callable[[str, List[SteeringVector]], List[SteeringVector]]] = None
     ):
         """
-        Initialize a Claude agent.
+        Initialize an AI agent.
 
         Args:
-            name: Identifier for this agent (e.g., "Claude A", "Claude B")
-            api_key: Anthropic API key
+            name: Identifier for this agent (e.g., "Agent A", "Agent B")
+            backend: ModelBackend instance (new way - recommended)
+            api_key: Anthropic API key (old way - for backward compatibility)
             model: Model identifier to use
             system_prompt: Optional system prompt to customize behavior
             steering_mode: Mode for applying steering vectors (BETA_API, SIMULATED, DISABLED)
@@ -45,7 +56,20 @@ class ClaudeAgent:
             vector_selector: Optional function to dynamically select vectors based on context
         """
         self.name = name
-        self.client = Anthropic(api_key=api_key)
+
+        # Handle backend - either passed directly or created from api_key
+        if backend is not None:
+            self.backend = backend
+        elif api_key is not None:
+            # Backward compatibility: create Anthropic backend from api_key
+            self.backend = create_backend(
+                BackendType.ANTHROPIC,
+                api_key=api_key,
+                model=model
+            )
+        else:
+            raise ValueError("Either 'backend' or 'api_key' must be provided")
+
         self.model = model
         self.base_system_prompt = system_prompt or "You are a helpful AI assistant engaging in a conversation."
         self.steering_mode = steering_mode
@@ -88,25 +112,18 @@ class ClaudeAgent:
             selected = self.vector_selector(message, self.last_incoming_vectors)
             vectors_to_apply.extend(selected)
 
-        # Prepare API call parameters
-        api_params = {
-            "model": self.model,
-            "max_tokens": 1024,
-            "system": self.base_system_prompt,
-            "messages": self.conversation_history
-        }
-
-        # Apply steering vectors
-        api_params = self.applicator.apply_to_api_params(
-            api_params,
+        # Apply steering vectors to system prompt
+        system_prompt_with_vectors = self.applicator.apply_to_system_prompt(
+            self.base_system_prompt,
             vectors_to_apply
         )
 
-        # Get response from Claude
-        response = self.client.messages.create(**api_params)
-
-        # Extract the response text
-        response_text = response.content[0].text
+        # Get response from backend
+        response_text = self.backend.generate(
+            messages=self.conversation_history,
+            system_prompt=system_prompt_with_vectors,
+            max_tokens=1024
+        )
 
         # Add to conversation history
         self.conversation_history.append({
@@ -137,15 +154,20 @@ class ClaudeAgent:
         }
 
 
+# Backward compatibility alias
+ClaudeAgent = AIAgent
+
+
 class ConversationManager:
-    """Manages conversations between two Claude agents with steering vector support."""
+    """Manages conversations between two AI agents with steering vector support."""
 
     def __init__(
         self,
-        api_key: str,
+        backend: Optional[ModelBackend] = None,
+        api_key: Optional[str] = None,  # For backward compatibility
         model: str = "claude-sonnet-4-5-20250929",
-        agent_a_name: str = "Claude A",
-        agent_b_name: str = "Claude B",
+        agent_a_name: str = "Agent A",
+        agent_b_name: str = "Agent B",
         agent_a_system: Optional[str] = None,
         agent_b_system: Optional[str] = None,
         steering_mode: SteeringMode = SteeringMode.SIMULATED,
@@ -159,7 +181,8 @@ class ConversationManager:
         Initialize the conversation manager.
 
         Args:
-            api_key: Anthropic API key
+            backend: ModelBackend instance to use for both agents (new way - recommended)
+            api_key: Anthropic API key (old way - for backward compatibility)
             model: Model identifier to use for both agents
             agent_a_name: Name for the first agent
             agent_b_name: Name for the second agent
@@ -171,9 +194,18 @@ class ConversationManager:
             agent_a_vector_selector: Dynamic vector selector for agent A
             agent_b_vector_selector: Dynamic vector selector for agent B
             show_vectors: Whether to display steering vectors during conversation
+
+        Examples:
+            # Using Ollama (free, local)
+            backend = create_backend(BackendType.OLLAMA, model="llama3.2")
+            manager = ConversationManager(backend=backend)
+
+            # Using Anthropic (paid, backward compatible)
+            manager = ConversationManager(api_key="your-key")
         """
-        self.agent_a = ClaudeAgent(
+        self.agent_a = AIAgent(
             name=agent_a_name,
+            backend=backend,
             api_key=api_key,
             model=model,
             system_prompt=agent_a_system,
@@ -182,8 +214,9 @@ class ConversationManager:
             vector_selector=agent_a_vector_selector
         )
 
-        self.agent_b = ClaudeAgent(
+        self.agent_b = AIAgent(
             name=agent_b_name,
+            backend=backend,
             api_key=api_key,
             model=model,
             system_prompt=agent_b_system,

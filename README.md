@@ -1,18 +1,22 @@
-# Two Claudes Conversation App
+# Two AI Conversation App with Steering Vectors
 
-An interactive Python application where two Claude AI models converse with each other using **steering vectors** for richer AI-to-AI communication.
+An interactive Python application where two AI models converse with each other using **steering vectors** for richer AI-to-AI communication.
+
+**✨ NEW: Now supports 100% FREE local models via Ollama!** No API key, no payment, no limits.
 
 Implementing this idea: https://x.com/nostalgebraist/status/2006179998885945541
 
 ## Overview
 
-This project enables two separate Claude AI instances to have conversations with each other using **steering vectors** - a technique for modifying AI behavior by intervening in the activation space. The human user acts as the moderator, starting conversations and optionally stopping them.
+This project enables two AI instances to have conversations with each other using **steering vectors** - a technique for modifying AI behavior by intervening in the activation space. The human user acts as the moderator, starting conversations and optionally stopping them.
 
-**NEW**: Steering vectors are now implemented! The Claudes can communicate not just through text, but also through "vectors" that convey tone, intent, emotion, and meta-information.
+**Steering vectors are now fully implemented!** The AIs can communicate not just through text, but also through "vectors" that convey tone, intent, emotion, and meta-information.
 
 ## Features
 
-- **Two Claude Instances**: Run two separate Claude models that converse with each other
+- **🆓 FREE Local Models**: Run completely free using Ollama (no API costs!)
+- **💳 Cloud Models**: Or use Anthropic's Claude API (paid)
+- **Two AI Instances**: Two separate AI models conversing with each other
 - **Steering Vector Communication** 🚀: Agents pass steering vectors to each other, enabling richer communication
   - 18 predefined vectors (analytical, creative, optimistic, cautious, etc.)
   - Dynamic vector selection based on context
@@ -39,7 +43,23 @@ cd steering-vectors-two-claudes
 pip install -r requirements.txt
 ```
 
-3. Set up your Anthropic API key:
+3. **Choose your model backend:**
+
+### Option A: FREE Local Models (Recommended for Getting Started)
+
+**No API key needed!**
+
+1. Install Ollama: https://ollama.ai
+2. Start Ollama: `ollama serve`
+3. Pull a model: `ollama pull llama3.2`
+4. Run the example: `python example_ollama_free.py`
+
+See [OLLAMA_SETUP.md](OLLAMA_SETUP.md) for detailed instructions.
+
+### Option B: Anthropic API (Paid, Cloud-based)
+
+1. Get an API key from: https://console.anthropic.com
+2. Set up your API key:
 ```bash
 cp .env.example .env
 # Edit .env and add your API key
@@ -47,7 +67,22 @@ cp .env.example .env
 
 ## Quick Start
 
-### Interactive Mode
+### FREE Local Models (Ollama)
+
+```bash
+# Make sure Ollama is running
+ollama serve
+
+# Pull a model (one-time)
+ollama pull llama3.2
+
+# Run the example
+python example_ollama_free.py
+```
+
+That's it! No payment, no API key, fully private and local.
+
+### Anthropic API (Paid)
 
 Run the interactive CLI:
 ```bash
